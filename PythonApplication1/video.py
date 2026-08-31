@@ -40,7 +40,13 @@ import re
 from numpy import pi, sin, cos
 
 # local modules
-from tst_scene_render import TestSceneRender
+# tst_scene_render — модуль из репозитория примеров OpenCV, в проект он не
+# входит. Он нужен только синтетическим источникам Book/Cube, поэтому импорт
+# необязательный: без него остаются рабочими камера, видеофайлы и synth:chess.
+try:
+    from tst_scene_render import TestSceneRender
+except ImportError:
+    TestSceneRender = None
 import common
 
 class VideoSynthBase(object):
@@ -55,7 +61,10 @@ class VideoSynthBase(object):
         if size is not None:
             w, h = map(int, size.split('x'))
             self.frame_size = (w, h)
-            self.bg = cv.resize(self.bg, self.frame_size)
+            # Масштабировать фон можно только если он задан: без bg= вызов
+            # cv.resize(None, ...) падал с ошибкой.
+            if self.bg is not None:
+                self.bg = cv.resize(self.bg, self.frame_size)
 
         self.noise = float(noise)
 
@@ -81,12 +90,23 @@ class VideoSynthBase(object):
     def isOpened(self):
         return True
 
+def _require_scene_render():
+    if TestSceneRender is None:
+        raise RuntimeError(
+            "Синтетические источники 'book' и 'cube' требуют модуль "
+            "tst_scene_render из примеров OpenCV, его нет в проекте. "
+            "Используйте synth:class=chess, камеру или видеофайл."
+        )
+    return TestSceneRender
+
+
 class Book(VideoSynthBase):
     def __init__(self, **kw):
         super(Book, self).__init__(**kw)
+        scene_render = _require_scene_render()
         backGr = cv.imread(cv.samples.findFile('graf1.png'))
         fgr = cv.imread(cv.samples.findFile('box.png'))
-        self.render = TestSceneRender(backGr, fgr, speed = 1)
+        self.render = scene_render(backGr, fgr, speed = 1)
 
     def read(self, dst=None):
         noise = np.zeros(self.render.sceneBg.shape, np.int8)
@@ -97,7 +117,8 @@ class Book(VideoSynthBase):
 class Cube(VideoSynthBase):
     def __init__(self, **kw):
         super(Cube, self).__init__(**kw)
-        self.render = TestSceneRender(cv.imread(cv.samples.findFile('pca_test1.jpg')), deformation = True,  speed = 1)
+        scene_render = _require_scene_render()
+        self.render = scene_render(cv.imread(cv.samples.findFile('pca_test1.jpg')), deformation = True,  speed = 1)
 
     def read(self, dst=None):
         noise = np.zeros(self.render.sceneBg.shape, np.int8)

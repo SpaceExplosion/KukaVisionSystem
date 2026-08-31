@@ -53,8 +53,15 @@ def compute_field_matrix(
     """Строит матрицу 3x3, отображающую (u, v) -> (X, Y) базы робота."""
     pixels = np.asarray(pixel_points, dtype=np.float64).reshape(-1, 2)
     robots = np.asarray(robot_points, dtype=np.float64).reshape(-1, 2)
-    if len(pixels) != len(robots) or len(pixels) < 3:
-        raise ValueError("Нужно минимум 3 пары точек (по ТЗ — 4).")
+    if len(pixels) != len(robots):
+        raise ValueError(
+            f"Число точек не совпадает: {len(pixels)} пиксельных и "
+            f"{len(robots)} координат робота."
+        )
+    if len(pixels) < 3:
+        raise ValueError(
+            f"Нужно минимум 3 пары точек (по ТЗ — 4), передано {len(pixels)}."
+        )
 
     if method == "affine":
         if len(pixels) == 3:
@@ -229,20 +236,29 @@ def main() -> int:
     field: FieldCalibration | None = None
     verify = False
     mouse_xy: tuple[int, int] | None = None
-    status = f"Кликните точку 1 (всего нужно >= 4)"
+    status = "Кликните точку 1 (всего нужно >= 4)"
+    # Координаты робота, заданные в аргументах: их нельзя терять при отмене (D).
+    preset_robot_points: list[tuple[float, float]] = list(args.robot or [])
 
     def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
-        nonlocal mouse_xy
+        nonlocal mouse_xy, status
         mouse_xy = (x, y)
         if event != cv.EVENT_LBUTTONDOWN:
             return
-        nonlocal pixel_points, robot_points, status
         index = len(pixel_points)
-        if index < len(robot_points):
-            robot = robot_points[index]
+        if index < len(preset_robot_points):
+            robot = preset_robot_points[index]
         else:
-            raw = input(f"Введите координаты робота X,Y для точки {index + 1}: ")
-            robot = parse_point(raw)
+            try:
+                raw = input(f"Введите координаты робота X,Y для точки {index + 1}: ")
+                robot = parse_point(raw)
+            except (argparse.ArgumentTypeError, ValueError) as exc:
+                print(f"Точка не добавлена: {exc}")
+                status = "Неверный ввод координат — точка не добавлена"
+                return
+        if index < len(robot_points):
+            robot_points[index] = robot
+        else:
             robot_points.append(robot)
         pixel_points.append((float(x), float(y)))
         print(f"Точка {index + 1}: пиксель ({x}, {y}) -> робот "
@@ -280,6 +296,10 @@ def main() -> int:
                 break
             if key in (ord("d"), ord("D")) and pixel_points:
                 pixel_points.pop()
+                # Координаты, введенные вручную, снимаем вместе с пикселем;
+                # заданные аргументами --robot сохраняем для повторного клика.
+                if len(robot_points) > max(len(pixel_points), len(preset_robot_points)):
+                    robot_points.pop()
                 status = f"Точка удалена, осталось: {len(pixel_points)}"
             elif key in (ord("v"), ord("V")):
                 if field is None:
@@ -291,17 +311,28 @@ def main() -> int:
                 if len(pixel_points) < 4:
                     status = f"Нужно минимум 4 точки, есть {len(pixel_points)}"
                     continue
-                if len(pixel_points) > len(robot_points):
-                    status = "Количество кликов и координат робота не совпадает"
+                # Гомография считается по парам точек: списки должны совпадать
+                # по длине, иначе compute_field_matrix падает с ValueError.
+                paired_robot_points = robot_points[: len(pixel_points)]
+                if len(paired_robot_points) != len(pixel_points):
+                    status = (f"Координат робота {len(robot_points)}, "
+                              f"кликов {len(pixel_points)} — не совпадает")
+                    print(status)
                     continue
-                matrix = compute_field_matrix(pixel_points, robot_points,
-                                              args.method)
+                try:
+                    matrix = compute_field_matrix(pixel_points,
+                                                  paired_robot_points,
+                                                  args.method)
+                except (ValueError, RuntimeError, cv.error) as exc:
+                    status = f"Не удалось рассчитать: {exc}"
+                    print(status)
+                    continue
                 field = FieldCalibration(
                     matrix=matrix,
-                    pixel_points=np.asarray(pixel_points),
-                    robot_points=np.asarray(robot_points),
+                    pixel_points=np.asarray(pixel_points, dtype=np.float64),
+                    robot_points=np.asarray(paired_robot_points, dtype=np.float64),
                     residual_mm=calibration_residuals(matrix, pixel_points,
-                                                      robot_points),
+                                                      paired_robot_points),
                 )
                 save_field_calibration(args.output, field)
                 residuals = field.residual_mm

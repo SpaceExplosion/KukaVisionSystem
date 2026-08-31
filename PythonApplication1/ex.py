@@ -27,7 +27,10 @@ class PlaneTracker:
         """Add new tracking target"""
         x0, y0, x1, y1 = rect
         raw_points, raw_descrs = self.detector.detectAndCompute(image, None)
-        
+        if raw_descrs is None or not raw_points:
+            print("В выделенной области нет особых точек — цель не добавлена.")
+            return
+
         # Filter keypoints within rect
         points, descs = [], []
         for kp, desc in zip(raw_points, raw_descrs):
@@ -35,7 +38,14 @@ class PlaneTracker:
             if x0 <= x <= x1 and y0 <= y <= y1:
                 points.append(kp)
                 descs.append(desc)
-        
+
+        # np.uint8([]) дает пустой массив неверной формы, и matcher.add
+        # падал внутри FLANN — проверяем заранее.
+        if len(descs) < MIN_MATCH_COUNT:
+            print(f"Точек в области {len(descs)}, нужно минимум "
+                  f"{MIN_MATCH_COUNT} — цель не добавлена.")
+            return
+
         descs = np.uint8(descs)
         self.matcher.add([descs])
         target = PlanarTarget(
@@ -70,14 +80,19 @@ class PlaneTracker:
                 continue
             
             target = self.targets[imgIdx]
+            # knnMatch(frame_descrs): queryIdx — точки кадра, trainIdx — цели.
             p0 = [target.keypoints[m.trainIdx].pt for m in matches]
             p1 = [frame_points[m.queryIdx].pt for m in matches]
             p0, p1 = np.float32((p0, p1))
             
             # Find homography
             H, status = cv.findHomography(p0, p1, cv.RANSAC, 3.0)
+            # При вырожденном наборе точек OpenCV возвращает None —
+            # обращение к status.ravel() падало с AttributeError.
+            if H is None or status is None:
+                continue
             status = status.ravel() != 0
-            
+
             if status.sum() < MIN_MATCH_COUNT:
                 continue
             
@@ -94,29 +109,55 @@ class PlaneTracker:
         tracked.sort(key=lambda t: len(t.p0), reverse=True)
         return tracked
 
-# Example usage
-import video
-from common import RectSelector
+def main():
+    """Демонстрация трекинга: выделите мышью область на кадре."""
+    import video
+    from common import RectSelector
 
-cap = video.create_capture(0)
-tracker = PlaneTracker()
-rect_sel = RectSelector('plane', tracker.add_target)
+    cap = video.create_capture(0)
+    if cap is None or not cap.isOpened():
+        print("Не удалось открыть источник кадров.")
+        return 1
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    
-    vis = frame.copy()
-    tracked = tracker.track(frame)
-    
-    for tr in tracked:
-        cv.polylines(vis, [np.int32(tr.quad)], True, (255, 255, 255), 2)
-        for (x, y) in np.int32(tr.p1):
-            cv.circle(vis, (x, y), 2, (255, 255, 255))
-    
-    cv.imshow('plane', vis)
-    if cv.waitKey(1) == 27:
-        break
+    tracker = PlaneTracker()
+    # Кадр для добавления цели читается в момент выделения области:
+    # RectSelector передает в callback только rect, а add_target
+    # ожидает (image, rect) — без этой обертки был TypeError.
+    latest = {"frame": None}
 
-cv.destroyAllWindows()
+    def on_rect(rect):
+        frame = latest["frame"]
+        if frame is None:
+            return
+        tracker.add_target(frame.copy(), rect)
+
+    # Окно должно существовать до setMouseCallback внутри RectSelector.
+    cv.namedWindow('plane')
+    rect_sel = RectSelector('plane', on_rect)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        latest["frame"] = frame
+
+        vis = frame.copy()
+        tracked = tracker.track(frame)
+
+        for tr in tracked:
+            cv.polylines(vis, [np.int32(tr.quad)], True, (255, 255, 255), 2)
+            for (x, y) in np.int32(tr.p1):
+                cv.circle(vis, (int(x), int(y)), 2, (255, 255, 255))
+
+        rect_sel.draw(vis)
+        cv.imshow('plane', vis)
+        if cv.waitKey(1) == 27:
+            break
+
+    cap.release()
+    cv.destroyAllWindows()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1414,8 +1414,10 @@ class VisionGui:
             elif kind == "server-stopped":
                 self._mark_server_stopped(payload)
             elif kind == "capture-flash":
-                frame, parts = payload
-                self.flash_frame = draw_parts(frame, parts)
+                # Кадр приходит уже с нарисованными рамками: повторный
+                # draw_parts рисовал их поверх самих себя.
+                annotated, _parts = payload
+                self.flash_frame = annotated
                 self.flash_until = time.monotonic() + 1.5
                 self.server_busy_until = time.monotonic() + 2.0
             elif kind == "server-status":
@@ -1583,7 +1585,8 @@ class VisionGui:
             color = (80, 210, 255)
             cv.line(display, (cx - 14, cy), (cx + 14, cy), color, 1, cv.LINE_AA)
             cv.line(display, (cx, cy - 14), (cx, cy + 14), color, 1, cv.LINE_AA)
-            if self.verify_var.get() and self.field is not None:
+            verify_on = bool(getattr(self, "verify_var", None)) and self.verify_var.get()
+            if verify_on and self.field is not None:
                 x, y = transform_pixel_to_robot(self.field.matrix, cx, cy)
                 self._draw_label(display, f"X={x:.1f} Y={y:.1f} mm",
                                  cx + 12, cy + 26, color=(150, 240, 150))
@@ -1811,7 +1814,10 @@ class VisionGui:
             self.aruco, self._detector_aruco, None, self.dictionary, gray
         )
         board_corners, board_ids = camcal.select_board_markers(corners, ids, self._point_map)
-        needed = self.min_markers_var.get()
+        try:
+            needed = self.min_markers_var.get()
+        except (AttributeError, tk.TclError):
+            needed = 6  # виджета нет (вкладка не построена) — берем значение по умолчанию
         if board_ids is None or len(board_ids) < needed:
             messagebox.showwarning(
                 "Калибровка",
@@ -1843,7 +1849,10 @@ class VisionGui:
 
     def run_camera_calibration(self) -> None:
         views = len(self.cam_image_points)
-        target = self.target_samples_var.get()
+        try:
+            target = self.target_samples_var.get()
+        except (AttributeError, tk.TclError):
+            target = 15
         if views < 3:
             messagebox.showwarning("Калибровка", "Нужно минимум 3 ракурса.")
             return
