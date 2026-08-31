@@ -1,0 +1,87 @@
+&ACCESS RVP
+&REL 1
+&PARAM TEMPLATE = C:\KRC\ROBOTER\Template\pagograph.vw
+&PARAM DISKPATH = KRC\ROBOTER\Program
+
+DEF VISION_PICK ( )
+
+  ; Пример KRL-программы Pick & Place по координатам от сервера зрения
+  ; (раздел 5 ТЗ). Требуется пакет KUKA.Ethernet KRL (EKI).
+  ;
+  ; Перед использованием:
+  ;   - скопируйте VisionConfig.xml в
+  ;     C:\KRC\ROBOTER\Config\User\Common\EthernetKRL\
+  ;   - проверьте адрес сервера зрения в VisionConfig.xml
+  ;   - настройте TOOL и BASE, скорости и высоты под вашу ячейку.
+
+  DECL INT nCount, nIndex
+  DECL FRAME fPart
+  DECL POS pApproach, pPick
+
+  ; Сигнал захвата: OUT 1 (пневматика), импульс 0.5 с — настройте под себя.
+  CONST INT gripperOut = 1
+
+  ; --- 1. Инициализация соединения -------------------------------------
+  CWRITE($FUNCT, TRUE, TRUE, "EKI_Init", "VisionConfig")
+  CWRITE($FUNCT, TRUE, TRUE, "EKI_Open", "VisionConfig")
+
+  ; --- 2. Запрос кадра из домашней позиции ------------------------------
+  ; Домашняя позиция не должна перекрывать объектив камеры.
+  PTP HOME Vel=100 % DEFAULT
+
+  CWRITE($FUNCT, TRUE, TRUE, "EKI_Send", "VisionConfig", "Trigger")
+
+  ; --- 3. Прием координат -----------------------------------------------
+  ; Ждем ответа сервера (до 2 с) и читаем число деталей.
+  WAIT FOR (EKI_GetInt("VisionConfig", "VisionResult/Item/@Count") > 0) OR (NOT $PRO_ACT)
+  nCount = EKI_GetInt("VisionConfig", "VisionResult/Item/@Count")
+
+  FOR nIndex = 1 TO nCount
+    ; Чтение очередной детали в структуру FRAME.
+    fPart.X = EKI_GetReal("VisionConfig", FMT("VisionResult/Part[%d]/@X", nIndex))
+    fPart.Y = EKI_GetReal("VisionConfig", FMT("VisionResult/Part[%d]/@Y", nIndex))
+    fPart.Z = EKI_GetReal("VisionConfig", FMT("VisionResult/Part[%d]/@Z", nIndex))
+    fPart.A = EKI_GetReal("VisionConfig", FMT("VisionResult/Part[%d]/@A", nIndex))
+    fPart.B = 0.0
+    fPart.C = 180.0  ; захват сверху
+
+    ; --- 4. Траектория захвата (Pick) ----------------------------------
+    pApproach = FRAME(fPart.X, fPart.Y, fPart.Z + 100.0, fPart.A, fPart.B, fPart.C)
+    pPick     = FRAME(fPart.X, fPart.Y, fPart.Z,        fPart.A, fPart.B, fPart.C)
+
+    PTP pApproach Vel=100 % DEFAULT            ; подход сверху
+    LIN pPick     Vel=0.05 m/s CPDAT1          ; опускание на высоту захвата
+    $OUT[gripperOut] = TRUE                    ; срабатывание пневматики
+    WAIT SEC 0.5
+    LIN pApproach Vel=0.05 m/s CPDAT1          ; подъем с деталью
+
+    ; --- 5. Траектория укладки (Place) ---------------------------------
+    ; Ячейка матрицы укладки вычисляется по индексу детали.
+    ; Подставьте ваши координаты паллеты и шаг сетки.
+    PLACE_PART(nIndex)
+  ENDFOR
+
+  ; --- 6. Закрытие соединения -------------------------------------------
+  CWRITE($FUNCT, TRUE, TRUE, "EKI_Close", "VisionConfig")
+  CWRITE($FUNCT, TRUE, TRUE, "EKI_Delete", "VisionConfig")
+
+  PTP HOME Vel=100 % DEFAULT
+
+END
+
+DEF PLACE_PART (nIndex : IN)
+  ; Пример укладки в матрицу 4 x N с шагом 50 мм.
+  DECL INT nCol, nRow
+  DECL POS pPlace
+
+  nCol = (nIndex - 1) MOD 4
+  nRow = (nIndex - 1) DIV 4
+
+  pPlace = FRAME(500.0 + nCol * 50.0, 300.0 + nRow * 50.0, 50.0, 0.0, 0.0, 180.0)
+
+  PTP REL {Z 50} Vel=100 % DEFAULT
+  LIN pPlace  Vel=0.1 m/s CPDAT1
+  $OUT[1] = FALSE                 ; открытие захвата
+  WAIT SEC 0.5
+  LIN REL {Z 50} Vel=0.1 m/s CPDAT1
+END

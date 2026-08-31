@@ -1,0 +1,24 @@
+%YAML 1.2
+---
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 644.0992140215983, 0., 320.19641979355475, 0.,
+       639.90568103272085, 239.41781254220624, 0., 0., 1. ]
+distortion_coefficients: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ 0.056250400114873714, -0.15605200688627249,
+       -0.00056751139350704675, -0.0019547829051536551,
+       0.097621739187287712 ]
+dictionary: DICT_6X6_250
+image_width: 640
+image_height: 480
+reprojection_error: 0.87390755557864219
+board_columns: 12
+board_rows: 18
+marker_size_mm: 8.
+marker_separation_mm: 6.
+start_id: 0

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Конфигурация KUKA.Ethernet KRL (EKI) для обмена с сервером зрения.
+
+     Файл размещается на контроллере KR C4:
+     C:\KRC\ROBOTER\Config\User\Common\EthernetKRL\VisionConfig.xml
+
+     Робот выступает TCP-клиентом и подключается к серверу зрения
+     (server.py) по адресу 192.168.1.10, порт 59152. Замените IP-адрес
+     на адрес вашего промышленного ПК. -->
+<ETHERNETKRL>
+  <CONFIGURATION>
+    <IP>192.168.1.10</IP>
+    <PORT>59152</PORT>
+    <PROTOCOL>TCP</PROTOCOL>
+    <TIMEOUT Connect="5000"/>
+  </CONFIGURATION>
+
+  <!-- Структура отправляемого запроса: <Trigger>Capture</Trigger> -->
+  <SEND>
+    <XML>
+      <ELEMENT Tag="Trigger/Capture"/>
+    </XML>
+  </SEND>
+
+  <!-- Структура принимаемого ответа сервера зрения -->
+  <RECEIVE>
+    <XML>
+      <ELEMENT Tag="VisionResult/Item/@Count" Type="INT"/>
+      <ELEMENT Tag="VisionResult/Part/@Index" Type="INT"/>
+      <ELEMENT Tag="VisionResult/Part/@X" Type="REAL"/>
+      <ELEMENT Tag="VisionResult/Part/@Y" Type="REAL"/>
+      <ELEMENT Tag="VisionResult/Part/@Z" Type="REAL"/>
+      <ELEMENT Tag="VisionResult/Part/@A" Type="REAL"/>
+    </XML>
+  </RECEIVE>
+</ETHERNETKRL>
