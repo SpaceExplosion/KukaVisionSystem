@@ -27,7 +27,7 @@ from field_calibration import (
     transform_angle_deg,
     transform_pixel_to_robot,
 )
-from server import VisionServer, build_vision_xml, parts_to_robot
+from server import VisionServer, build_vision_xml
 from vision import PartDetector, VisionParams, normalize_angle
 
 # Известная матрица поля: масштаб 0.5 мм/пиксель, поворот 10 град., сдвиг.

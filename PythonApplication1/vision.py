@@ -86,7 +86,10 @@ def _preprocess(frame: np.ndarray, params: VisionParams) -> np.ndarray:
     """Предобработка кадра: фильтрация, бинаризация, морфология."""
     blur_k = max(1, params.blur_ksize) | 1  # нечетное
     if params.use_hsv:
-        hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
+        source = frame
+        if blur_k >= 3:
+            source = cv.GaussianBlur(frame, (blur_k, blur_k), 0)
+        hsv = cv.cvtColor(source, cv.COLOR_BGR2HSV)
         low = np.asarray(params.hsv_low, dtype=np.uint8)
         high = np.asarray(params.hsv_high, dtype=np.uint8)
         binary = cv.inRange(hsv, low, high)
@@ -106,13 +109,19 @@ def _preprocess(frame: np.ndarray, params: VisionParams) -> np.ndarray:
         else:
             _, binary = cv.threshold(gray, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
 
-        foreground = np.count_nonzero(binary)
-        is_minority = foreground < binary.size / 2
-        invert = (
-            params.polarity == "bright"
-            if params.polarity in ("dark", "bright")
-            else not is_minority  # auto: объекты занимают меньшую часть кадра
-        )
+        # После THRESH_BINARY+OTSU белым помечены ЯРКИЕ пиксели кадра.
+        # На выходе белым должны быть ОБЪЕКТЫ, поэтому:
+        #   polarity="dark"   — объекты темные  -> инвертируем;
+        #   polarity="bright" — объекты светлые -> оставляем как есть;
+        #   polarity="auto"   — объекты занимают меньшую часть кадра, поэтому
+        #                       инвертируем, когда белого больше половины кадра.
+        if params.polarity == "dark":
+            invert = True
+        elif params.polarity == "bright":
+            invert = False
+        else:
+            bright_pixels = np.count_nonzero(binary)
+            invert = bright_pixels > binary.size / 2
         if invert:
             binary = cv.bitwise_not(binary)
 
@@ -144,11 +153,15 @@ def detect_parts(frame: np.ndarray, params: VisionParams) -> list[Part]:
             continue
 
         aspect = short_side / long_side
-        if not (params.aspect_min <= aspect <= params.aspect_max):
+        aspect_low = min(params.aspect_min, params.aspect_max)
+        aspect_high = max(params.aspect_min, params.aspect_max)
+        if not (aspect_low <= aspect <= aspect_high):
             continue
 
-        fill = area / (width * height) if width * height > 0 else 0.0
-        if fill < params.fill_min:
+        rect_area = width * height
+        if rect_area <= 0:
+            continue
+        if area / rect_area < params.fill_min:
             continue
 
         parts.append(
@@ -229,6 +242,8 @@ def add_vision_arguments(parser: argparse.ArgumentParser) -> None:
                         help="максимальная площадь в пикселях (0 = без лимита)")
     parser.add_argument("--aspect-min", type=float, default=0.55,
                         help="минимальное отношение сторон minAreaRect")
+    parser.add_argument("--aspect-max", type=float, default=1.0,
+                        help="максимальное отношение сторон minAreaRect")
     parser.add_argument("--fill-min", type=float, default=0.55,
                         help="минимальная заливка контуром прямоугольника")
     parser.add_argument("--hsv-low", type=parse_hsv, default=None, metavar="H,S,V",
@@ -246,12 +261,15 @@ def add_vision_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def params_from_args(args: argparse.Namespace) -> VisionParams:
+    # HSV-сегментация включается любой из границ; вторая берется по умолчанию,
+    # иначе переданный в одиночку --hsv-high молча игнорировался.
     return VisionParams(
         min_area_px=args.min_area,
         max_area_px=args.max_area,
         aspect_min=args.aspect_min,
+        aspect_max=getattr(args, "aspect_max", 1.0),
         fill_min=args.fill_min,
-        use_hsv=args.hsv_low is not None,
+        use_hsv=args.hsv_low is not None or args.hsv_high is not None,
         hsv_low=args.hsv_low or (0, 60, 60),
         hsv_high=args.hsv_high or (179, 255, 255),
         blur_ksize=args.blur,

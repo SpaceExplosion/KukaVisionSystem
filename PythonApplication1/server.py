@@ -21,11 +21,13 @@
 from __future__ import annotations
 
 import argparse
+import math
 import socket
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import cv2 as cv
 import numpy as np
@@ -97,14 +99,23 @@ class FrameSource:
             if frame is None:
                 raise RuntimeError(f"Не удалось прочитать снимок {self.source}.")
             return frame
+        last_error: Exception | None = None
         for _ in range(10):
-            ok, frame = self._capture.read()
-            if ok:
-                return frame
-            self._capture.release()
+            if self._capture is not None:
+                ok, frame = self._capture.read()
+                if ok:
+                    return frame
+                self._capture.release()
+                self._capture = None
             time.sleep(0.05)
-            self._capture = self._open()
-        raise RuntimeError("Источник кадров не отдает кадры.")
+            try:
+                self._capture = self._open()
+            except OSError as exc:
+                # Камеру могли выдернуть: запоминаем причину и пробуем снова,
+                # не оставляя объект в нерабочем состоянии.
+                last_error = exc
+        detail = f" ({last_error})" if last_error is not None else ""
+        raise RuntimeError(f"Источник кадров не отдает кадры{detail}.")
 
     def warm_up(self, frames: int = WARMUP_FRAMES) -> None:
         if self._static_image:
@@ -115,18 +126,34 @@ class FrameSource:
     def release(self) -> None:
         if self._capture is not None:
             self._capture.release()
+            self._capture = None
 
 
 def build_vision_xml(parts: list[RobotPart], error: str | None = None) -> str:
     """Формирует XML-ответ в формате KUKA.Ethernet KRL."""
     if error is not None:
+        # Текст ошибки экранируется: & < > и кавычки в сообщении иначе рвут
+        # XML, и парсер контроллера отбрасывает весь ответ.
+        safe_error = escape(str(error), {'"': "&quot;", "'": "&apos;"})
         return (
             '<VisionResult>\n'
-            f'  <Item Count="0" Error="{error}"/>\n'
+            f'  <Item Count="0" Error="{safe_error}"/>\n'
             "</VisionResult>\n"
         )
-    lines = ["<VisionResult>", f'  <Item Count="{len(parts)}">']
-    for index, part in enumerate(parts, start=1):
+    # Деталь с nan/inf (вырожденная гомография) отдавать роботу нельзя:
+    # KRL примет её как число и уведет инструмент в непредсказуемую точку.
+    valid = [
+        part for part in parts
+        if all(
+            math.isfinite(value)
+            for value in (part.x_mm, part.y_mm, part.z_mm, part.angle_deg)
+        )
+    ]
+    if len(valid) != len(parts):
+        return build_vision_xml([], error="non-finite-coordinates")
+
+    lines = ["<VisionResult>", f'  <Item Count="{len(valid)}">']
+    for index, part in enumerate(valid, start=1):
         lines.append(
             f'    <Part Index="{index}" X="{part.x_mm:.1f}" '
             f'Y="{part.y_mm:.1f}" Z="{part.z_mm:.1f}" '
@@ -189,13 +216,19 @@ class VisionServer:
         self._stop = False
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._listener.bind((host, port))
-        self._listener.listen(1)
-        self._listener.settimeout(0.5)
-        self.address = self._listener.getsockname()
-        self.frames = frames if frames is not None else FrameSource(source)
-        if self._owns_frames:
-            self.frames.warm_up()
+        try:
+            self._listener.bind((host, port))
+            self._listener.listen(1)
+            self._listener.settimeout(0.5)
+            self.address = self._listener.getsockname()
+            # Источник открывается после слушателя, но его отказ не должен
+            # оставлять порт занятым «повисшим» сокетом.
+            self.frames = frames if frames is not None else FrameSource(source)
+            if self._owns_frames:
+                self.frames.warm_up()
+        except Exception:
+            self._listener.close()
+            raise
 
     def _log(self, message: str) -> None:
         self._log_fn(message)
@@ -242,7 +275,10 @@ class VisionServer:
                     response = build_vision_xml([], error="capture-failed")
                     frame = None
                     parts = []
-                conn.sendall(response.encode("ascii"))
+                # errors="replace": сообщение об ошибке может содержать
+                # не-ASCII символы (путь, текст исключения) — обрыв соединения
+                # из-за UnicodeEncodeError недопустим.
+                conn.sendall(response.encode("ascii", errors="replace"))
                 self._log("Отправлен ответ:\n" + response.rstrip())
                 if self.capture_callback is not None and frame is not None:
                     try:

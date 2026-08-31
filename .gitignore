@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.vs/
+test_frame.png
+_test_fixes_*.png
